@@ -1,0 +1,207 @@
+From 07c0b49a929da7c26317c9d3039810e84033d479 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Tue, 19 Nov 2024 16:31:48 -0700
+Subject: [PATCH v1 1/1] blktrace/events: Add an option to stop blktrace upon a
+ number of events
+To: linux-btrace@vger.kernel.org
+Cc: axboe@kernel.dk
+
+It is useful to be able to run blktrace in a way that it stops when a
+certain number of events is reached. This patch adds a new -e/--events
+command line argument. Note this limit is per block device and can be
+used in combination with the -w/--stopwatch argument.
+
+Documentation is updated to include the new argument.
+
+Signed-off-by: Stephen Bates <sbates@raithlin.com>
+---
+ README           |  3 ++-
+ blktrace.c       | 49 +++++++++++++++++++++++++++++++++++++++++++++++-
+ doc/blktrace.8   | 15 +++++++++++++--
+ doc/blktrace.tex |  7 ++++++-
+ 4 files changed, 69 insertions(+), 5 deletions(-)
+
+diff --git a/README b/README
+index d7d1fbf..7fd803b 100644
+--- a/README
++++ b/README
+@@ -38,7 +38,7 @@ Usage
+ -----
+ 
+ $ blktrace -d <dev> [ -r debug_path ] [ -o output ] [ -k ] [ -w time ]
+-		    [ -a action ] [ -A action mask ]
++		    [ -e events] [ -a action ] [ -A action mask ]
+ 
+ 	-d Use specified device. May also be given last after options.
+ 	-r Path to mounted debugfs, defaults to /sys/kernel/debug.
+@@ -46,6 +46,7 @@ $ blktrace -d <dev> [ -r debug_path ] [ -o output ] [ -k ] [ -w time ]
+ 	-D Directory to prepend to output file names.
+ 	-k Kill running trace.
+ 	-w Stop after defined time, in seconds.
++	-e Stop after defined captured trace events.
+ 	-a Only trace specific actions (use more -a options to add actions).
+ 	   Available actions are:
+ 
+diff --git a/blktrace.c b/blktrace.c
+index 038b2cb..bc3fe84 100644
+--- a/blktrace.c
++++ b/blktrace.c
+@@ -282,6 +282,8 @@ static int pagesize;
+ static int act_mask = ~0U;
+ static int kill_running_trace;
+ static int stop_watch;
++static unsigned long long  events;
++static volatile int events_done;
+ static int piped_output;
+ 
+ static char *debugfs_path = "/sys/kernel/debug";
+@@ -329,7 +331,7 @@ static int *cl_fds;
+ static int (*handle_pfds)(struct tracer *, int, int);
+ static int (*handle_list)(struct tracer_devpath_head *, struct list_head *);
+ 
+-#define S_OPTS	"d:a:A:r:o:kw:vVb:n:D:lh:p:sI:"
++#define S_OPTS	"d:a:A:e:r:o:kw:vVb:n:D:lh:p:sI:"
+ static struct option l_opts[] = {
+ 	{
+ 		.name = "dev",
+@@ -355,6 +357,12 @@ static struct option l_opts[] = {
+ 		.flag = NULL,
+ 		.val = 'A'
+ 	},
++	{
++		.name = "events",
++		.has_arg = required_argument,
++		.flag = NULL,
++		.val = 'e'
++	},
+ 	{
+ 		.name = "relay",
+ 		.has_arg = required_argument,
+@@ -444,6 +452,7 @@ static char usage_str[] = "\n\n" \
+         "[ -o <file>          | --output=<file>]\n" \
+         "[ -D <dir>           | --output-dir=<dir>\n" \
+         "[ -w <time>          | --stopwatch=<time>]\n" \
++        "[ -e <events>        | --events=<number>]\n" \
+         "[ -a <action field>  | --act-mask=<action field>]\n" \
+         "[ -A <action mask>   | --set-mask=<action mask>]\n" \
+         "[ -b <size>          | --buffer-size]\n" \
+@@ -461,6 +470,7 @@ static char usage_str[] = "\n\n" \
+ 	"\t-o File(s) to send output to\n" \
+ 	"\t-D Directory to prepend to output file names\n" \
+ 	"\t-w Stop after defined time, in seconds\n" \
++	"\t-e Stop after defined number of trace events\n" \
+ 	"\t-a Only trace specified actions. See documentation\n" \
+ 	"\t-A Give trace mask as a single value. See documentation\n" \
+ 	"\t-b Sub buffer size in KiB (default 512)\n" \
+@@ -1862,6 +1872,34 @@ static void *thread_main(void *arg)
+ 		else if (ndone < 0 && errno != EINTR)
+ 			fprintf(stderr, "Thread %d poll failed: %d/%s\n",
+ 				tp->cpu, errno, strerror(errno));
++
++		if (ndone && events) {
++			struct list_head *p;
++			unsigned long long nevents;
++
++			__list_for_each(p, &devpaths) {
++				int cpu;
++				struct pdc_stats *sp;
++				struct devpath *dpp = list_entry(p, struct devpath, head);
++				nevents = 0;
++
++				for (cpu = 0, sp = dpp->stats; cpu < dpp->ncpus; cpu++, sp++) {
++					/*
++					 * Estimate events if not known...
++					 */
++					if (sp->nevents == 0) {
++						nevents += sp->data_read /
++							sizeof(struct blk_io_trace);
++					} else
++						nevents += sp->nevents;
++
++				}
++				if (events && (nevents >= events))
++					events_done = 1;
++			}
++			if (events_done)
++				tp->is_done = 1;
++		}
+ 	}
+ 
+ 	/*
+@@ -2155,6 +2193,15 @@ static int handle_args(int argc, char *argv[])
+ 			break;
+ 		}
+ 
++		case 'e':
++			events = strtoull(optarg, NULL, 10);
++			if (events == 0) {
++				fprintf(stderr,
++					"Invalid events value (%llu)\n",
++					events);
++				return 1;
++			}
++			break;
+ 		case 'r':
+ 			debugfs_path = optarg;
+ 			break;
+diff --git a/doc/blktrace.8 b/doc/blktrace.8
+index 820b03a..b32cede 100644
+--- a/doc/blktrace.8
++++ b/doc/blktrace.8
+@@ -6,7 +6,7 @@ blktrace \- generate traces of the i/o traffic on block devices
+ 
+ 
+ .SH SYNOPSIS
+-.B blktrace \-d \fIdev\fR [ \-r \fIdebugfs_path\fR ] [ \-o \fIoutput\fR ] [ \-w \fItime\fR ] [ \-a \fIaction\fR ] [ \-A \fIaction_mask\fR ] [ \-v ]
++.B blktrace \-d \fIdev\fR [ \-r \fIdebugfs_path\fR ] [ \-o \fIoutput\fR ] [ \-w \fItime\fR ] [ \-e \fIevents\fR ] [ \-a \fIaction\fR ] [ \-A \fIaction_mask\fR ] [ \-v ]
+ .br
+ 
+ 
+@@ -69,7 +69,11 @@ The default behaviour for blktrace is to run forever until explicitly
+ killed by the user (via a control-C, or sending SIGINT signal to the
+ process via invocation the kill (1) utility). Also you can specify a
+ run-time duration for blktrace via the \fB\-w\fR option -- then
+-blktrace will run for the specified number of seconds, and then halt.
++blktrace will run for the specified number of seconds, and then
++halt. Or you can specify a number of records to capture via the
++\fB-e\fR option. Note that this will cause blktrace to stop when the
++first block device reaches this. The \fB-w\fR and \fB-e\fR options can
++be combined with the first one to be reached taking prescident.
+ 
+ 
+ .SH OPTIONS
+@@ -191,6 +195,13 @@ Outputs version
+ Sets run time to the number of seconds specified  
+ .RE
+ 
++\-e \fIevents\fR
++.br
++\-\-events=\fIevents\fR
++.RS
++Sets run to stop when the specifed number of events are captured for any one block device
++.RE
++
+ 
+ .SH FILTER MASKS
+ The following masks may be passed with the \fI\-a\fR command line
+diff --git a/doc/blktrace.tex b/doc/blktrace.tex
+index 836ac4a..d78de8b 100644
+--- a/doc/blktrace.tex
++++ b/doc/blktrace.tex
+@@ -377,7 +377,12 @@ of the more arcane command line options:
+     \item You can specify a run-time duration for blktrace via the
+     \emph{-w} option -- then blktrace will run for the specified number
+     of seconds, and then halt.
+-  \end{enumerate}
++
++    \item You can specify a record entry duration for blktrace via the
++    \emph{-e} option -- then blktrace will run until the specified
++    number of records are captured for any of the block devices, and
++    then halt.
++\end{enumerate}
+ \end{itemize}
+ 
+ \subsection{\label{sec:blktrace-args}Command line arguments}
+-- 
+2.43.0
+

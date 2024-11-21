@@ -1,0 +1,36 @@
+From 07c0b49a929da7c26317c9d3039810e84033d479 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Thu, 21 Nov 2024 10:54:59 -0700
+Subject: [PATCH v1 0/1] Add an option to stop blktrace based on events recorded
+To: linux-btrace@vger.kernel.org
+Cc: axboe@kernel.dk
+
+Hi
+
+I am exploring the idea of tying blktrace to a prometheus exporter to
+gather more precise block layer activity across a fleet of servers. As
+part of that I thought it might be useful to be able to run blktrace
+until a user-specified number of events are recorded.
+
+So the following patch adds a new option to do that. I also updated
+the relevant documentation.
+
+I'd appreciate feedback or comments on this!
+
+Cheers
+
+Stephen
+
+Stephen Bates (1):
+  blktrace/events: Add an option to stop blktrace upon a number of
+    events
+
+ README           |  3 ++-
+ blktrace.c       | 49 +++++++++++++++++++++++++++++++++++++++++++++++-
+ doc/blktrace.8   | 15 +++++++++++++--
+ doc/blktrace.tex |  7 ++++++-
+ 4 files changed, 69 insertions(+), 5 deletions(-)
+
+-- 
+2.43.0
+
