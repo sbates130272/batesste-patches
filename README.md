@@ -20,4 +20,13 @@ batesste-patches$ BRANCH=events PROJECT=blktrace ./gen-patches
 In this example we generate one patch and a cover letter based on the
 [blktrace][ref-blktrace] project.
 
+## Emailing Patches
+
+Since I already have an Ansible role that [sets up
+mutt][ref-ansible-mutt]  on my systems I can use mutt with something
+like:
+```
+mutt -H - < cat <patch-name>.patch
+
 [ref-blktrace]: https://git.kernel.dk/blktrace.git
+[ref-ansible-mutt]:https://github.com/sbates130272/batesste-ansible/tree/main/roles/mutt_setup
